@@ -21,13 +21,15 @@ from PyQt5.QtWidgets import (
     QGraphicsItem,
     QFileDialog,
     QAction, QMenuBar, QDockWidget,
-    QTextEdit, QTabWidget, QStyle
+    QTextEdit, QTabWidget, QStyle, QToolBar
 )
+from PyQt5.QtPrintSupport import QPrinter # Added QPrinter for PDF export
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QImage, QKeySequence, QIcon
 from PyQt5.QtCore import QDate, Qt, QPointF, QRectF, QSize
 
 from srz_kun.core.data_model import Person
 from srz_kun.core.project_file import save_project, load_project
+from srz_kun.core.importer import import_from_csv, import_from_excel, ImportFormatError
 
 # --- Constants for Diagram Items ---
 NODE_WIDTH = 160
@@ -175,7 +177,7 @@ class MainWindowUI(QMainWindow):
         self.form_layout.addRow(QLabel("住所:"), self.address_input)
         self.relation_input = QComboBox()
         self.relation_input.addItems(["被相続人", "妻", "夫", "長男", "長女", "養子", "父", "母", "子", "その他"])
-        self.relation_input.currentTextChanged.connect(self._on_relationship_changed) # Connect signal
+        self.relation_input.currentTextChanged.connect(self._on_relationship_changed)
         self.form_layout.addRow(QLabel("続柄:"), self.relation_input)
         self.status_input = QComboBox()
         self.status_input.addItems(["生存", "死亡"])
@@ -192,7 +194,7 @@ class MainWindowUI(QMainWindow):
         self.dod_input.setDisplayFormat("yyyy-MM-dd")
         self.dod_input.setNullable(True)
         self.dod_input.setSpecialValueText(" ")
-        self.dod_input.setDate(self.dod_input.minimumDate()) # Ensure it starts null
+        self.dod_input.setDate(self.dod_input.minimumDate())
         self.form_layout.addRow(QLabel("死亡年月日:"), self.dod_input)
         self.left_panel_v_layout.addLayout(self.form_layout)
 
@@ -223,6 +225,10 @@ class MainWindowUI(QMainWindow):
         self.diagram_view.setDragMode(QGraphicsView.ScrollHandDrag)
         self.main_h_layout.addWidget(self.diagram_view, 3)
 
+        self.main_toolbar = QToolBar("メインツールバー")
+        self.main_toolbar.setIconSize(QSize(22, 22))
+        self.addToolBar(Qt.TopToolBarArea, self.main_toolbar)
+
         self.support_dock_widget = QDockWidget("サポート", self)
         self.support_tab_widget = QTabWidget()
         self.checklist_widget = QListWidget()
@@ -251,7 +257,7 @@ class MainWindowUI(QMainWindow):
 
         self._create_menus()
         self._on_is_alive_status_changed()
-        self._on_relationship_changed(self.relation_input.currentText()) # Call for initial state
+        self._on_relationship_changed(self.relation_input.currentText())
         self._redraw_diagram()
 
         self.family_template_combo.setToolTip("一般的な家族構成をリストに自動入力します。現在のリスト内容はクリアされます。")
@@ -272,6 +278,123 @@ class MainWindowUI(QMainWindow):
         self.export_csv_button.setIcon(self.style().standardIcon(QStyle.SP_ArrowUp))
         self.export_excel_button.setIcon(self.style().standardIcon(QStyle.SP_ArrowUp))
 
+    def _on_export_diagram_as_png(self):
+        if not self.scene.items():
+            QMessageBox.information(self, "エクスポート不可", "図にエクスポートするアイテムがありません。")
+            return
+
+        # Suggest a filename based on current project or default
+        default_filename = "相続関係図.png"
+        if self.current_project_filepath:
+            base, _ = os.path.splitext(os.path.basename(self.current_project_filepath))
+            default_filename = f"{base}_相続関係図.png"
+        elif self.people_list:
+            # Try to find deceased person for filename
+            deceased_person = next((p for p in self.people_list if p.relationship_to_deceased == "被相続人"), None)
+            if deceased_person:
+                sanitized_name = "".join(c if c.isalnum() else "_" for c in deceased_person.name)
+                default_filename = f"{sanitized_name}_相続関係図.png"
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "PNG画像として保存",
+            default_filename,
+            "PNG Files (*.png)"
+        )
+
+        if not filepath:
+            return
+
+        try:
+            # Get the bounding rectangle of all items in the scene
+            scene_rect = self.scene.itemsBoundingRect()
+            if scene_rect.isEmpty():
+                QMessageBox.warning(self, "エクスポートエラー", "図の範囲を取得できませんでした。")
+                return
+
+            # Add some padding for margins
+            padding = 20 # pixels
+            render_rect = scene_rect.adjusted(-padding, -padding, padding, padding)
+
+            # Create QImage
+            image_size = render_rect.size().toSize()
+            if image_size.width() <= 0 or image_size.height() <= 0:
+                QMessageBox.warning(self, "エクスポートエラー", f"無効な画像サイズが計算されました: {image_size.width()}x{image_size.height()}")
+                return
+
+            image = QImage(image_size, QImage.Format_ARGB32_Premultiplied)
+            image.fill(Qt.white)  # Fill background with white
+
+            # Create QPainter and render the scene
+            painter = QPainter(image)
+            try:
+                # Define the target rectangle on the image (i.e., the whole image)
+                target_image_rect = QRectF(image.rect())
+                # Render the padded scene rectangle (source_rect_from_scene) onto the image
+                self.scene.render(painter, target_image_rect, render_rect)
+            finally:
+                painter.end() # Ensure painter is ended
+
+            # Save the image
+            if image.save(filepath):
+                QMessageBox.information(self, "エクスポート成功", f"図がPNG画像として正常に保存されました:\n{filepath}")
+            else:
+                QMessageBox.critical(self, "エクスポート失敗", "PNG画像の保存中にエラーが発生しました。")
+
+        except Exception as e:
+            QMessageBox.critical(self, "予期せぬエラー", f"PNG画像のエクスポート中に予期せぬエラーが発生しました: {e}")
+
+    def _on_export_diagram_as_pdf(self):
+        if not self.scene.items():
+            QMessageBox.information(self, "エクスポート不可", "図にエクスポートするアイテムがありません。")
+            return
+
+        default_filename = "相続関係図.pdf"
+        if self.current_project_filepath:
+            base, _ = os.path.splitext(os.path.basename(self.current_project_filepath))
+            default_filename = f"{base}_相続関係図.pdf"
+        elif self.people_list:
+            deceased_person = next((p for p in self.people_list if p.relationship_to_deceased == "被相続人"), None)
+            if deceased_person:
+                sanitized_name = "".join(c if c.isalnum() else "_" for c in deceased_person.name)
+                default_filename = f"{sanitized_name}_相続関係図.pdf"
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "PDFとして出力",
+            default_filename,
+            "PDF Files (*.pdf)"
+        )
+
+        if not filepath:
+            return
+
+        try:
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(filepath)
+            printer.setPageMargins(15.0, 15.0, 15.0, 15.0, QPrinter.Millimeter)
+
+            source_rect = self.scene.itemsBoundingRect()
+            if source_rect.isEmpty():
+                QMessageBox.warning(self, "エクスポートエラー", "図の範囲を取得できませんでした。")
+                return
+
+            painter = QPainter(printer)
+            try:
+                page_rect_logical = printer.pageRect(QPrinter.Point)
+                target_rect_on_page = QRectF(page_rect_logical)
+
+                self.scene.render(painter, target_rect_on_page, source_rect)
+            finally:
+                painter.end()
+
+            QMessageBox.information(self, "エクスポート成功", f"図がPDFとして正常に保存されました:\n{filepath}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "予期せぬエラー", f"PDFのエクスポート中に予期せぬエラーが発生しました: {e}")
+            print(f"PDF Export Error: {e}") # Also print to console for debugging
+
     def _on_pattern_guide_selected(self, pattern_name):
         guide_html = self.INHERITANCE_PATTERNS_GUIDE.get(pattern_name, "<p>情報が見つかりません。</p>")
         self.pattern_guide_display.setHtml(guide_html)
@@ -285,7 +408,7 @@ class MainWindowUI(QMainWindow):
         else:
             self.status_input.setEnabled(True)
             self.waiver_input.setEnabled(True)
-        self._on_is_alive_status_changed() # Ensure DoD input state is updated
+        self._on_is_alive_status_changed()
 
     def _gather_project_data(self) -> dict:
         people_data = []
@@ -640,7 +763,7 @@ class MainWindowUI(QMainWindow):
         status_text = self.status_input.currentText()
         if status_text == "生存":
             self.dod_input.setEnabled(False)
-            self.dod_input.setDate(self.dod_input.minimumDate()) # Reset to nullable state
+            self.dod_input.setDate(self.dod_input.minimumDate())
             self.dod_input.setSpecialValueText(" ")
         else:
             self.dod_input.setEnabled(True)
@@ -693,9 +816,7 @@ class MainWindowUI(QMainWindow):
         self.address_input.clear()
         self.relation_input.setCurrentIndex(0)
         self.status_input.setCurrentIndex(0)
-        # self.status_input.setEnabled(True) # This will be handled by _on_relationship_changed
         self.waiver_input.setCurrentIndex(0)
-        # self.waiver_input.setEnabled(True) # This will be handled by _on_relationship_changed
         self.dob_input.setDate(QDate.currentDate().addYears(-30))
         self.dod_input.setDate(self.dod_input.minimumDate())
         self.dod_input.setSpecialValueText(" ")
@@ -726,6 +847,110 @@ class MainWindowUI(QMainWindow):
         load_action.triggered.connect(self._on_load_project)
         file_menu.addAction(load_action)
 
+        file_menu.addSeparator()
+
+        import_csv_action = QAction("CSVからインポート...", self)
+        import_csv_action.setIcon(self.style().standardIcon(QStyle.SP_ArrowDown))
+        import_csv_action.triggered.connect(self._on_import_csv_clicked)
+        file_menu.addAction(import_csv_action)
+
+        import_excel_action = QAction("Excelからインポート...", self)
+        import_excel_action.setIcon(self.style().standardIcon(QStyle.SP_ArrowDown))
+        if not OPENPYXL_AVAILABLE:
+            import_excel_action.setEnabled(False)
+            import_excel_action.setToolTip("Excelインポートにはopenpyxlライブラリが必要です。")
+        import_excel_action.triggered.connect(self._on_import_excel_clicked)
+        file_menu.addAction(import_excel_action)
+
+
+    def _handle_imported_data(self, imported_people_list: list, source_type: str):
+        if not imported_people_list:
+            QMessageBox.information(self, "インポート結果", f"{source_type}からインポートする有効なデータが見つかりませんでした。")
+            return
+
+        self._clear_all_people_data()
+
+        temp_people_list = []
+        skipped_count = 0
+        for i, person_dict in enumerate(imported_people_list):
+            try:
+                person = Person(
+                    id=person_dict.get('id'),
+                    name=person_dict.get('name', "不明な氏名"),
+                    relationship_to_deceased=person_dict.get('relationship_to_deceased', "不明"),
+                    date_of_birth=person_dict.get('date_of_birth') or "",
+                    date_of_death=person_dict.get('date_of_death'),
+                    permanent_domicile=person_dict.get('permanent_domicile', ""),
+                    address=person_dict.get('address', ""),
+                    is_alive=person_dict.get('is_alive', True),
+                    waived_inheritance=person_dict.get('waived_inheritance', False)
+                )
+                temp_people_list.append(person)
+                item = QListWidgetItem(str(person))
+                item.setData(Qt.UserRole, person.id)
+                self.people_list_widget.addItem(item)
+            except Exception as e:
+                skipped_count += 1
+                print(f"Error creating Person object from imported data (row {i+1}): {person_dict}. Error: {e}")
+                QMessageBox.warning(self, "インポート警告", f"{source_type}の{i+1}行目のデータから人物オブジェクトを作成中にエラーが発生しました。この行はスキップされます。\n詳細: {e}")
+
+        self.people_list = temp_people_list
+        self._redraw_diagram()
+
+        success_msg = f"{len(self.people_list)}名の人物情報が{source_type}から正常にインポートされました。"
+        if skipped_count > 0:
+            success_msg += f"\n{skipped_count}行のデータはエラーのためスキップされました。"
+        QMessageBox.information(self, "インポート完了", success_msg)
+
+    def _on_import_csv_clicked(self):
+        if self.people_list or self.current_project_filepath:
+            reply = QMessageBox.question(self, "確認",
+                                         "現在のプロジェクトデータは破棄されます。CSVからインポートしますか？\n（変更は先に保存してください）",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.No:
+                return
+
+        options = QFileDialog.Options()
+        filepath, _ = QFileDialog.getOpenFileName(self, "CSVファイルからインポート", "",
+                                                  "CSVファイル (*.csv);;All Files (*)", options=options)
+        if filepath:
+            try:
+                imported_data = import_from_csv(filepath)
+                self._handle_imported_data(imported_data, "CSV")
+            except FileNotFoundError as e:
+                QMessageBox.critical(self, "ファイルエラー", str(e))
+            except ImportFormatError as e:
+                QMessageBox.critical(self, "CSVインポートエラー", str(e))
+            except Exception as e:
+                QMessageBox.critical(self, "予期せぬエラー", f"CSVインポート中に予期せぬエラーが発生しました: {e}")
+                print(f"Unexpected CSV Import Error: {e}")
+
+    def _on_import_excel_clicked(self):
+        if not OPENPYXL_AVAILABLE:
+            QMessageBox.warning(self, "機能制限", "Excelインポートに必要なライブラリ (openpyxl) が見つかりません。")
+            return
+
+        if self.people_list or self.current_project_filepath:
+            reply = QMessageBox.question(self, "確認",
+                                         "現在のプロジェクトデータは破棄されます。Excelからインポートしますか？\n（変更は先に保存してください）",
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if reply == QMessageBox.No:
+                return
+
+        options = QFileDialog.Options()
+        filepath, _ = QFileDialog.getOpenFileName(self, "Excelファイルからインポート", "",
+                                                  "Excelファイル (*.xlsx);;All Files (*)", options=options)
+        if filepath:
+            try:
+                imported_data = import_from_excel(filepath)
+                self._handle_imported_data(imported_data, "Excel")
+            except FileNotFoundError as e:
+                QMessageBox.critical(self, "ファイルエラー", str(e))
+            except ImportFormatError as e:
+                QMessageBox.critical(self, "Excelインポートエラー", str(e))
+            except Exception as e:
+                QMessageBox.critical(self, "予期せぬエラー", f"Excelインポート中に予期せぬエラーが発生しました: {e}")
+                print(f"Unexpected Excel Import Error: {e}")
 
     def _on_export_csv_clicked(self):
         if not self.people_list:
