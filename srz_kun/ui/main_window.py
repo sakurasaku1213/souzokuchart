@@ -21,9 +21,9 @@ from PyQt5.QtWidgets import (
     QGraphicsItem,
     QFileDialog,
     QAction, QMenuBar, QDockWidget,
-    QTextEdit, QTabWidget, QStyle, QToolBar
+    QTextEdit, QTabWidget, QStyle, QToolBar # Added QToolBar
 )
-from PyQt5.QtPrintSupport import QPrinter # Added QPrinter for PDF export
+from PyQt5.QtPrintSupport import QPrinter # Added QPrinter
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QImage, QKeySequence, QIcon
 from PyQt5.QtCore import QDate, Qt, QPointF, QRectF, QSize
 
@@ -283,13 +283,11 @@ class MainWindowUI(QMainWindow):
             QMessageBox.information(self, "エクスポート不可", "図にエクスポートするアイテムがありません。")
             return
 
-        # Suggest a filename based on current project or default
         default_filename = "相続関係図.png"
         if self.current_project_filepath:
             base, _ = os.path.splitext(os.path.basename(self.current_project_filepath))
             default_filename = f"{base}_相続関係図.png"
         elif self.people_list:
-            # Try to find deceased person for filename
             deceased_person = next((p for p in self.people_list if p.relationship_to_deceased == "被相続人"), None)
             if deceased_person:
                 sanitized_name = "".join(c if c.isalnum() else "_" for c in deceased_person.name)
@@ -306,36 +304,29 @@ class MainWindowUI(QMainWindow):
             return
 
         try:
-            # Get the bounding rectangle of all items in the scene
             scene_rect = self.scene.itemsBoundingRect()
             if scene_rect.isEmpty():
                 QMessageBox.warning(self, "エクスポートエラー", "図の範囲を取得できませんでした。")
                 return
 
-            # Add some padding for margins
-            padding = 20 # pixels
+            padding = 20
             render_rect = scene_rect.adjusted(-padding, -padding, padding, padding)
 
-            # Create QImage
             image_size = render_rect.size().toSize()
             if image_size.width() <= 0 or image_size.height() <= 0:
                 QMessageBox.warning(self, "エクスポートエラー", f"無効な画像サイズが計算されました: {image_size.width()}x{image_size.height()}")
                 return
 
             image = QImage(image_size, QImage.Format_ARGB32_Premultiplied)
-            image.fill(Qt.white)  # Fill background with white
+            image.fill(Qt.white)
 
-            # Create QPainter and render the scene
             painter = QPainter(image)
             try:
-                # Define the target rectangle on the image (i.e., the whole image)
                 target_image_rect = QRectF(image.rect())
-                # Render the padded scene rectangle (source_rect_from_scene) onto the image
                 self.scene.render(painter, target_image_rect, render_rect)
             finally:
-                painter.end() # Ensure painter is ended
+                painter.end()
 
-            # Save the image
             if image.save(filepath):
                 QMessageBox.information(self, "エクスポート成功", f"図がPNG画像として正常に保存されました:\n{filepath}")
             else:
@@ -393,7 +384,7 @@ class MainWindowUI(QMainWindow):
 
         except Exception as e:
             QMessageBox.critical(self, "予期せぬエラー", f"PDFのエクスポート中に予期せぬエラーが発生しました: {e}")
-            print(f"PDF Export Error: {e}") # Also print to console for debugging
+            print(f"PDF Export Error: {e}")
 
     def _on_pattern_guide_selected(self, pattern_name):
         guide_html = self.INHERITANCE_PATTERNS_GUIDE.get(pattern_name, "<p>情報が見つかりません。</p>")
@@ -862,6 +853,30 @@ class MainWindowUI(QMainWindow):
         import_excel_action.triggered.connect(self._on_import_excel_clicked)
         file_menu.addAction(import_excel_action)
 
+        file_menu.addSeparator()
+
+        # PNG Export Action (created as self attribute to be accessible by toolbar)
+        self.export_png_action = QAction(self.style().standardIcon(QStyle.SP_DriveHDIcon), "PNG画像として保存...", self) # Using SP_DriveHDIcon as a generic image/file icon
+        self.export_png_action.setToolTip("現在の相続関係図をPNG画像ファイルとして直接保存します。")
+        self.export_png_action.triggered.connect(self._on_export_diagram_as_png)
+        file_menu.addAction(self.export_png_action)
+
+        # PDF Export Action (created as self attribute)
+        self.export_pdf_action = QAction(self.style().standardIcon(QStyle.SP_FileDialogPrintButton), "PDFとして出力...", self)
+        self.export_pdf_action.setToolTip("現在の相続関係図をPDFファイルとして直接出力します。")
+        self.export_pdf_action.triggered.connect(self._on_export_diagram_as_pdf)
+        file_menu.addAction(self.export_pdf_action)
+
+        # Add actions to toolbar
+        if hasattr(self, 'main_toolbar'):
+            # Example of adding existing save action, if desired
+            # save_toolbar_action = QAction(self.style().standardIcon(QStyle.SP_DialogSaveButton), "保存", self)
+            # save_toolbar_action.triggered.connect(self._on_save_project)
+            # self.main_toolbar.addAction(save_toolbar_action)
+            # self.main_toolbar.addSeparator()
+            self.main_toolbar.addAction(self.export_png_action)
+            self.main_toolbar.addAction(self.export_pdf_action)
+
 
     def _handle_imported_data(self, imported_people_list: list, source_type: str):
         if not imported_people_list:
@@ -1036,6 +1051,114 @@ class MainWindowUI(QMainWindow):
                     os.remove(temp_image_path)
                 except Exception as e_remove:
                     print(f"Error deleting temporary file {temp_image_path}: {e_remove}")
+
+    def _on_export_diagram_as_png(self):
+        if not self.scene.items():
+            QMessageBox.information(self, "エクスポート不可", "図にエクスポートするアイテムがありません。")
+            return
+
+        default_filename = "相続関係図.png"
+        if self.current_project_filepath:
+            base, _ = os.path.splitext(os.path.basename(self.current_project_filepath))
+            default_filename = f"{base}_相続関係図.png"
+        elif self.people_list:
+            deceased_person = next((p for p in self.people_list if p.relationship_to_deceased == "被相続人"), None)
+            if deceased_person:
+                sanitized_name = "".join(c if c.isalnum() else "_" for c in deceased_person.name)
+                default_filename = f"{sanitized_name}_相続関係図.png"
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "PNG画像として保存",
+            default_filename,
+            "PNG Files (*.png)"
+        )
+
+        if not filepath:
+            return
+
+        try:
+            scene_rect = self.scene.itemsBoundingRect()
+            if scene_rect.isEmpty():
+                QMessageBox.warning(self, "エクスポートエラー", "図の範囲を取得できませんでした。")
+                return
+
+            padding = 20
+            render_rect = scene_rect.adjusted(-padding, -padding, padding, padding)
+
+            image_size = render_rect.size().toSize()
+            if image_size.width() <= 0 or image_size.height() <= 0:
+                QMessageBox.warning(self, "エクスポートエラー", f"無効な画像サイズが計算されました: {image_size.width()}x{image_size.height()}")
+                return
+
+            image = QImage(image_size, QImage.Format_ARGB32_Premultiplied)
+            image.fill(Qt.white)
+
+            painter = QPainter(image)
+            try:
+                target_image_rect = QRectF(image.rect())
+                self.scene.render(painter, target_image_rect, render_rect)
+            finally:
+                painter.end()
+
+            if image.save(filepath):
+                QMessageBox.information(self, "エクスポート成功", f"図がPNG画像として正常に保存されました:\n{filepath}")
+            else:
+                QMessageBox.critical(self, "エクスポート失敗", "PNG画像の保存中にエラーが発生しました。")
+
+        except Exception as e:
+            QMessageBox.critical(self, "予期せぬエラー", f"PNG画像のエクスポート中に予期せぬエラーが発生しました: {e}")
+
+    def _on_export_diagram_as_pdf(self):
+        if not self.scene.items():
+            QMessageBox.information(self, "エクスポート不可", "図にエクスポートするアイテムがありません。")
+            return
+
+        default_filename = "相続関係図.pdf"
+        if self.current_project_filepath:
+            base, _ = os.path.splitext(os.path.basename(self.current_project_filepath))
+            default_filename = f"{base}_相続関係図.pdf"
+        elif self.people_list:
+            deceased_person = next((p for p in self.people_list if p.relationship_to_deceased == "被相続人"), None)
+            if deceased_person:
+                sanitized_name = "".join(c if c.isalnum() else "_" for c in deceased_person.name)
+                default_filename = f"{sanitized_name}_相続関係図.pdf"
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "PDFとして出力",
+            default_filename,
+            "PDF Files (*.pdf)"
+        )
+
+        if not filepath:
+            return
+
+        try:
+            printer = QPrinter(QPrinter.HighResolution)
+            printer.setOutputFormat(QPrinter.PdfFormat)
+            printer.setOutputFileName(filepath)
+            printer.setPageMargins(15.0, 15.0, 15.0, 15.0, QPrinter.Millimeter)
+
+            source_rect = self.scene.itemsBoundingRect()
+            if source_rect.isEmpty():
+                QMessageBox.warning(self, "エクスポートエラー", "図の範囲を取得できませんでした。")
+                return
+
+            painter = QPainter(printer)
+            try:
+                page_rect_logical = printer.pageRect(QPrinter.Point)
+                target_rect_on_page = QRectF(page_rect_logical)
+
+                self.scene.render(painter, target_rect_on_page, source_rect)
+            finally:
+                painter.end()
+
+            QMessageBox.information(self, "エクスポート成功", f"図がPDFとして正常に保存されました:\n{filepath}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "予期せぬエラー", f"PDFのエクスポート中に予期せぬエラーが発生しました: {e}")
+            print(f"PDF Export Error: {e}")
 
     def load_data(self, project_data):
         print("Direct load_data called (placeholder)...")
