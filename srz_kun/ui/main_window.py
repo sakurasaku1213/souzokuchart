@@ -142,7 +142,7 @@ class MainWindowUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.current_project_filepath = None
-        self.loaded_layout_positions = {} # Initialize for Load functionality
+        self.loaded_layout_positions = {}
         self.setWindowTitle(f"{self.APP_NAME} Ver. {self.APP_VERSION} - Untitled")
         self.setGeometry(100, 100, 1200, 750)
 
@@ -175,7 +175,7 @@ class MainWindowUI(QMainWindow):
         self.form_layout.addRow(QLabel("住所:"), self.address_input)
         self.relation_input = QComboBox()
         self.relation_input.addItems(["被相続人", "妻", "夫", "長男", "長女", "養子", "父", "母", "子", "その他"])
-        self.relation_input.currentTextChanged.connect(self._on_relationship_changed)
+        self.relation_input.currentTextChanged.connect(self._on_relationship_changed) # Connect signal
         self.form_layout.addRow(QLabel("続柄:"), self.relation_input)
         self.status_input = QComboBox()
         self.status_input.addItems(["生存", "死亡"])
@@ -192,7 +192,7 @@ class MainWindowUI(QMainWindow):
         self.dod_input.setDisplayFormat("yyyy-MM-dd")
         self.dod_input.setNullable(True)
         self.dod_input.setSpecialValueText(" ")
-        self.dod_input.setDate(QDate())
+        self.dod_input.setDate(self.dod_input.minimumDate()) # Ensure it starts null
         self.form_layout.addRow(QLabel("死亡年月日:"), self.dod_input)
         self.left_panel_v_layout.addLayout(self.form_layout)
 
@@ -276,8 +276,8 @@ class MainWindowUI(QMainWindow):
         guide_html = self.INHERITANCE_PATTERNS_GUIDE.get(pattern_name, "<p>情報が見つかりません。</p>")
         self.pattern_guide_display.setHtml(guide_html)
 
-    def _on_relationship_changed(self, text):
-        if text == "被相続人":
+    def _on_relationship_changed(self, relationship_text: str):
+        if relationship_text == "被相続人":
             self.status_input.setCurrentText("死亡")
             self.status_input.setEnabled(False)
             self.waiver_input.setCurrentText("なし")
@@ -285,7 +285,7 @@ class MainWindowUI(QMainWindow):
         else:
             self.status_input.setEnabled(True)
             self.waiver_input.setEnabled(True)
-        self._on_is_alive_status_changed() # Ensure DoD state is updated
+        self._on_is_alive_status_changed() # Ensure DoD input state is updated
 
     def _gather_project_data(self) -> dict:
         people_data = []
@@ -640,7 +640,7 @@ class MainWindowUI(QMainWindow):
         status_text = self.status_input.currentText()
         if status_text == "生存":
             self.dod_input.setEnabled(False)
-            self.dod_input.setDate(QDate())
+            self.dod_input.setDate(self.dod_input.minimumDate()) # Reset to nullable state
             self.dod_input.setSpecialValueText(" ")
         else:
             self.dod_input.setEnabled(True)
@@ -657,7 +657,7 @@ class MainWindowUI(QMainWindow):
         is_alive = True if status_text == "生存" else False
 
         waiver_text = self.waiver_input.currentText()
-        if relation == "被相続人": # Ensure consistency for "Deceased"
+        if relation == "被相続人":
             waived_inheritance = False
         else:
             waived_inheritance = True if waiver_text == "あり" else False
@@ -669,13 +669,17 @@ class MainWindowUI(QMainWindow):
         dod_str = None
 
         if not is_alive:
-            if self.dod_input.isEnabled() and dod_qdate.isValid() and not (self.dod_input.specialValueText() and dod_qdate == QDate()):
+            if self.dod_input.isEnabled() and dod_qdate.isValid() and \
+               not (self.dod_input.specialValueText() and dod_qdate == self.dod_input.minimumDate()):
+
                 dod_str = dod_qdate.toString("yyyy-MM-dd")
+
                 if dob_qdate.isValid() and dod_qdate < dob_qdate:
                     QMessageBox.warning(self, "入力エラー", "死亡年月日は生年月日より後の日付である必要があります。")
                     return
-            elif relation == "被相続人" and not (dod_qdate.isValid() and not (self.dod_input.specialValueText() and dod_qdate == QDate())):
-                 pass
+            elif relation == "被相続人":
+                if not (dod_qdate.isValid() and not (self.dod_input.specialValueText() and dod_qdate == self.dod_input.minimumDate())):
+                    pass
 
         new_person = Person(name=name, relationship_to_deceased=relation, date_of_birth=dob_str, permanent_domicile=perm_domicile, address=address, is_alive=is_alive, waived_inheritance=waived_inheritance, date_of_death=dod_str)
         if self.loaded_layout_positions:
@@ -689,11 +693,12 @@ class MainWindowUI(QMainWindow):
         self.address_input.clear()
         self.relation_input.setCurrentIndex(0)
         self.status_input.setCurrentIndex(0)
-        self.status_input.setEnabled(True)
+        # self.status_input.setEnabled(True) # This will be handled by _on_relationship_changed
         self.waiver_input.setCurrentIndex(0)
-        self.waiver_input.setEnabled(True)
+        # self.waiver_input.setEnabled(True) # This will be handled by _on_relationship_changed
         self.dob_input.setDate(QDate.currentDate().addYears(-30))
-        self.dod_input.setDate(QDate())
+        self.dod_input.setDate(self.dod_input.minimumDate())
+        self.dod_input.setSpecialValueText(" ")
         self.name_input.setFocus()
         self._on_relationship_changed(self.relation_input.currentText())
 
